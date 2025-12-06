@@ -5,56 +5,66 @@ import os
 
 app = Flask(__name__)
 
-# CSVファイル名（リポジトリ内のファイル）
-DEFAULT_CSV = 'suumo_bukken_mod_23_2025-12-06.csv'
+# CSVファイル設定
+CSV_FILE = 'suumo_bukken_mod_23_2025-12-06.csv'
 
-# HTMLテンプレート（簡易版）
+# HTMLテンプレート（簡易デザイン）
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
-    <title>不動産マップ (Flask版)</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>body { padding: 20px; }</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>不動産坪単価マップ</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; padding: 20px; }
+        .map-container { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    </style>
 </head>
 <body>
-<div class="container">
-    <h2 class="mb-4">🏙️ 不動産坪単価マップ</h2>
-    
-    <div class="card mb-4">
-        <div class="card-body">
-            <form method="get" class="row g-3">
-                <div class="col-md-3">
-                    <label class="form-label">坪単価 (万円) 下限</label>
-                    <input type="number" name="min_price" class="form-control" value="{{ min_price }}">
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label">坪単価 (万円) 上限</label>
-                    <input type="number" name="max_price" class="form-control" value="{{ max_price }}">
-                </div>
-                <div class="col-12">
-                    <button type="submit" class="btn btn-primary">条件適用</button>
-                    <a href="/" class="btn btn-secondary">リセット</a>
-                </div>
-            </form>
+    <div class="container">
+        <h2 class="mb-4">🏙️ 不動産坪単価マップ (Flask版)</h2>
+        
+        <div class="card mb-4">
+            <div class="card-body">
+                <form method="get" class="row g-3 align-items-end">
+                    <div class="col-md-3">
+                        <label class="form-label">坪単価 (万円/坪) 下限</label>
+                        <input type="number" name="min_price" class="form-control" value="{{ min_price }}">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">坪単価 (万円/坪) 上限</label>
+                        <input type="number" name="max_price" class="form-control" value="{{ max_price }}">
+                    </div>
+                    <div class="col-md-3">
+                        <button type="submit" class="btn btn-primary w-100">検索</button>
+                    </div>
+                    <div class="col-md-3">
+                        <a href="/" class="btn btn-outline-secondary w-100">リセット</a>
+                    </div>
+                </form>
+            </div>
         </div>
-    </div>
 
-    <div class="mb-3">
-        <strong>表示件数:</strong> {{ count }} 件
+        {% if error %}
+            <div class="alert alert-danger">{{ error }}</div>
+        {% else %}
+            <div class="mb-2 text-end text-muted">
+                該当件数: <strong>{{ count }}</strong> 件
+            </div>
+            <div class="map-container">
+                {{ plot_html|safe }}
+            </div>
+        {% endif %}
     </div>
-    
-    <div>
-        {{ plot_html|safe }}
-    </div>
-</div>
 </body>
 </html>
 """
 
 def load_data():
-    if os.path.exists(DEFAULT_CSV):
-        return pd.read_csv(DEFAULT_CSV)
+    if os.path.exists(CSV_FILE):
+        return pd.read_csv(CSV_FILE)
     return pd.DataFrame()
 
 @app.route('/', methods=['GET'])
@@ -62,14 +72,18 @@ def index():
     df = load_data()
     
     if df.empty:
-        return "CSVファイルが見つかりません。リポジトリにファイルを配置してください。"
+        return render_template_string(HTML_TEMPLATE, error="CSVファイルが読み込めませんでした。", min_price=0, max_price=10000, count=0, plot_html="")
 
-    # フィルタ条件の取得
-    min_price = request.args.get('min_price', type=int, default=0)
-    max_price = request.args.get('max_price', type=int, default=10000)
+    # フィルタパラメータ取得
+    try:
+        min_price = int(request.args.get('min_price', 0))
+        max_price = int(request.args.get('max_price', 10000))
+    except ValueError:
+        min_price = 0
+        max_price = 10000
 
-    # データのフィルタリング
-    # カラム名はCSVに合わせて '不動産単価（万／坪）' を使用
+    # フィルタリング
+    # データフレームの列名は実際のCSVに合わせています
     mask = (df['不動産単価（万／坪）'] >= min_price) & (df['不動産単価（万／坪）'] <= max_price)
     df_filtered = df[mask]
 
@@ -82,24 +96,27 @@ def index():
             color="不動産単価（万／坪）",
             size="不動産単価（万／坪）",
             hover_name="物件名",
+            hover_data=["価格(万円)", "駅名", "築年数"],
             color_continuous_scale=px.colors.sequential.Jet,
             size_max=15,
             zoom=10,
             mapbox_style="carto-positron",
             height=600
         )
-        plot_html = fig.to_html(full_html=False)
+        fig.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
+        plot_html = fig.to_html(full_html=False, include_plotlyjs='cdn')
     else:
-        plot_html = "<p class='alert alert-warning'>条件に一致する物件がありません。</p>"
+        plot_html = "<p class='text-center py-5'>条件に一致する物件がありません。</p>"
 
     return render_template_string(
         HTML_TEMPLATE, 
         plot_html=plot_html, 
         min_price=min_price, 
         max_price=max_price,
-        count=len(df_filtered)
+        count=len(df_filtered),
+        error=None
     )
 
 if __name__ == '__main__':
-    # App Runnerはポート8080で待機
+    # App Runner用のポート設定
     app.run(host='0.0.0.0', port=8080)
