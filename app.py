@@ -1,123 +1,105 @@
-import streamlit as st
+from flask import Flask, request, render_template_string
 import pandas as pd
 import plotly.express as px
 import os
 
-# ページ設定
-st.set_page_config(layout="wide", page_title="不動産坪単価マップ")
+app = Flask(__name__)
 
-# タイトル
-st.title("🏙️ 不動産坪単価可視化マップ")
+# CSVファイル名（リポジトリ内のファイル）
+DEFAULT_CSV = 'suumo_bukken_mod_23_2025-12-06.csv'
 
-# データの読み込み関数
-@st.cache_data
-def load_data(file_path_or_buffer):
-    try:
-        df = pd.read_csv(file_path_or_buffer)
-        return df
-    except Exception as e:
-        return None
+# HTMLテンプレート（簡易版）
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>不動産マップ (Flask版)</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>body { padding: 20px; }</style>
+</head>
+<body>
+<div class="container">
+    <h2 class="mb-4">🏙️ 不動産坪単価マップ</h2>
+    
+    <div class="card mb-4">
+        <div class="card-body">
+            <form method="get" class="row g-3">
+                <div class="col-md-3">
+                    <label class="form-label">坪単価 (万円) 下限</label>
+                    <input type="number" name="min_price" class="form-control" value="{{ min_price }}">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label">坪単価 (万円) 上限</label>
+                    <input type="number" name="max_price" class="form-control" value="{{ max_price }}">
+                </div>
+                <div class="col-12">
+                    <button type="submit" class="btn btn-primary">条件適用</button>
+                    <a href="/" class="btn btn-secondary">リセット</a>
+                </div>
+            </form>
+        </div>
+    </div>
 
-# サイドバー設定
-with st.sidebar:
-    st.header("データ設定")
+    <div class="mb-3">
+        <strong>表示件数:</strong> {{ count }} 件
+    </div>
     
-    # 1. ファイルアップローダー
-    uploaded_file = st.file_uploader("CSVファイルをアップロード（任意）", type=["csv"])
-    
-    # デフォルトファイルのパス（リポジトリに含まれるファイルを想定）
-    DEFAULT_FILE = "suumo_bukken_mod_23_2025-12-06.csv"
-    
-    df = None
-    
-    # アップロードされたファイルがあればそれを使用、なければデフォルトファイルを探す
-    if uploaded_file is not None:
-        df = load_data(uploaded_file)
-        st.success("アップロードされたファイルを使用中")
-    elif os.path.exists(DEFAULT_FILE):
-        df = load_data(DEFAULT_FILE)
-        st.info(f"デフォルトファイルを使用中: {DEFAULT_FILE}")
-    else:
-        st.warning("データファイルが見つかりません。CSVをアップロードするか、リポジトリにファイルを配置してください。")
+    <div>
+        {{ plot_html|safe }}
+    </div>
+</div>
+</body>
+</html>
+"""
 
-# メイン処理
-if df is not None:
-    # 必要なカラムの確認 (緯度, 経度, 不動産単価（万／坪）)
-    required_columns = ['緯度', '経度', '不動産単価（万／坪）', '物件名']
+def load_data():
+    if os.path.exists(DEFAULT_CSV):
+        return pd.read_csv(DEFAULT_CSV)
+    return pd.DataFrame()
+
+@app.route('/', methods=['GET'])
+def index():
+    df = load_data()
     
-    if all(col in df.columns for col in required_columns):
-        # 欠損値の削除
-        df_clean = df.dropna(subset=['緯度', '経度', '不動産単価（万／坪）'])
-        
-        # --- フィルタリング UI ---
-        st.sidebar.subheader("検索条件")
-        
-        # 1. 坪単価スライダー
-        min_price = int(df_clean['不動産単価（万／坪）'].min())
-        max_price = int(df_clean['不動産単価（万／坪）'].max())
-        price_range = st.sidebar.slider(
-            "坪単価（万円/坪）",
-            min_value=min_price, 
-            max_value=max_price, 
-            value=(min_price, max_price)
+    if df.empty:
+        return "CSVファイルが見つかりません。リポジトリにファイルを配置してください。"
+
+    # フィルタ条件の取得
+    min_price = request.args.get('min_price', type=int, default=0)
+    max_price = request.args.get('max_price', type=int, default=10000)
+
+    # データのフィルタリング
+    # カラム名はCSVに合わせて '不動産単価（万／坪）' を使用
+    mask = (df['不動産単価（万／坪）'] >= min_price) & (df['不動産単価（万／坪）'] <= max_price)
+    df_filtered = df[mask]
+
+    # マップ作成
+    if not df_filtered.empty:
+        fig = px.scatter_mapbox(
+            df_filtered,
+            lat="緯度",
+            lon="経度",
+            color="不動産単価（万／坪）",
+            size="不動産単価（万／坪）",
+            hover_name="物件名",
+            color_continuous_scale=px.colors.sequential.Jet,
+            size_max=15,
+            zoom=10,
+            mapbox_style="carto-positron",
+            height=600
         )
-        
-        # 2. 面積スライダー（もしカラムがあれば）
-        if '面積' in df_clean.columns:
-            min_area = int(df_clean['面積'].min())
-            max_area = int(df_clean['面積'].max())
-            area_range = st.sidebar.slider(
-                "面積 (m²)",
-                min_value=min_area,
-                max_value=max_area,
-                value=(min_area, max_area)
-            )
-            df_clean = df_clean[(df_clean['面積'] >= area_range[0]) & (df_clean['面積'] <= area_range[1])]
-
-        # フィルタ適用
-        mask = (
-            (df_clean['不動産単価（万／坪）'] >= price_range[0]) & 
-            (df_clean['不動産単価（万／坪）'] <= price_range[1])
-        )
-        df_filtered = df_clean[mask]
-        
-        # --- メイン画面 ---
-        
-        # 指標表示
-        c1, c2, c3 = st.columns(3)
-        c1.metric("表示物件数", f"{len(df_filtered)} 件")
-        c2.metric("平均坪単価", f"{df_filtered['不動産単価（万／坪）'].mean():.1f} 万円")
-        c3.metric("最高坪単価", f"{df_filtered['不動産単価（万／坪）'].max():.1f} 万円")
-        
-        # マップ描画
-        if not df_filtered.empty:
-            fig = px.scatter_mapbox(
-                df_filtered,
-                lat="緯度",
-                lon="経度",
-                color="不動産単価（万／坪）",
-                size="不動産単価（万／坪）",
-                hover_name="物件名",
-                hover_data={
-                    "緯度": False, "経度": False,
-                    "価格(万円)": True,
-                    "駅名": True
-                },
-                color_continuous_scale=px.colors.sequential.Jet,
-                size_max=15,
-                zoom=10,
-                mapbox_style="carto-positron",
-                height=700
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # データテーブル
-            with st.expander("詳細データを見る"):
-                st.dataframe(df_filtered)
-        else:
-            st.warning("条件に一致する物件がありません。")
-            
+        plot_html = fig.to_html(full_html=False)
     else:
-        st.error(f"CSVファイルの形式が異なります。必要な列: {required_columns}")
-else:
-    st.info("👈 サイドバーからCSVファイルをアップロードしてください。")
+        plot_html = "<p class='alert alert-warning'>条件に一致する物件がありません。</p>"
+
+    return render_template_string(
+        HTML_TEMPLATE, 
+        plot_html=plot_html, 
+        min_price=min_price, 
+        max_price=max_price,
+        count=len(df_filtered)
+    )
+
+if __name__ == '__main__':
+    # App Runnerはポート8080で待機
+    app.run(host='0.0.0.0', port=8080)
