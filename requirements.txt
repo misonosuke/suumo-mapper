@@ -1,3 +1,4 @@
 streamlit
-pandas
+pandas<2.2.0
 plotly
+pyarrow>=14.0.1
